@@ -2,7 +2,9 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include "chronos/coordination/redis_coordination.hpp"
 #include "chronos/persistence/in_memory/in_memory_repositories.hpp"
@@ -26,6 +28,11 @@ struct Metrics {
   std::atomic<long long> worker_utilization_pct{0};
   std::atomic<long long> task_latency_ms{0};
   std::atomic<long long> db_latency_ms{0};
+
+  // Phase 10 multi-tenant visibility
+  std::atomic<unsigned long long> audit_events_total{0};
+  mutable std::mutex tenant_mu;
+  std::unordered_map<std::string, unsigned long long> tenant_requests_total;
 };
 
 struct HandlerContext {

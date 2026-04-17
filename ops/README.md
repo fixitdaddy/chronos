@@ -14,5 +14,15 @@ definitions, deployment manifests, observability bootstrap, and runbooks.
   - `ops/observability/elastic/filebeat/filebeat.yml`
 - Local compose for observability stack:
   - `ops/observability/compose-observability.yml`
-- Runbook:
+- Runbooks:
   - `ops/runbooks/observability-operability.md`
+
+## Production hardening (Phase 10)
+
+- security policy and secret/TLS/auth guidance:
+  - `ops/security/secrets-and-auth.md`
+- chaos suite:
+  - `ops/chaos/run-chaos-suite.sh`
+  - `ops/chaos/README.md`
+- failure runbooks:
+  - `ops/runbooks/phase10-failure-runbooks.md`

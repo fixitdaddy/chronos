@@ -1,5 +1,7 @@
 #include "chronos/api/handlers/metrics_handlers.hpp"
 
+#include <mutex>
+
 namespace chronos::api::handlers {
 
 http::HttpResponse HandleMetrics(
@@ -31,6 +33,14 @@ http::HttpResponse HandleMetrics(
   body += "chronos_worker_utilization_pct " + std::to_string(context->metrics->worker_utilization_pct.load()) + "\n";
   body += "chronos_task_latency_ms " + std::to_string(context->metrics->task_latency_ms.load()) + "\n";
   body += "chronos_db_latency_ms " + std::to_string(context->metrics->db_latency_ms.load()) + "\n";
+  body += "chronos_audit_events_total " + std::to_string(context->metrics->audit_events_total.load()) + "\n";
+
+  {
+    std::lock_guard<std::mutex> lock(context->metrics->tenant_mu);
+    for (const auto& [tenant, count] : context->metrics->tenant_requests_total) {
+      body += "chronos_tenant_requests_total{tenant=\"" + tenant + "\"} " + std::to_string(count) + "\n";
+    }
+  }
 
   return {.status = 200,
           .body = body,

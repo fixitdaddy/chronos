@@ -1,6 +1,8 @@
 #include "chronos/api/http/server.hpp"
 
 #include <chrono>
+#include <mutex>
+#include <string>
 #include <utility>
 
 #include "chronos/api/handlers/dead_letter_handlers.hpp"
@@ -77,19 +79,55 @@ HttpResponse ApiServer::Handle(HttpRequest request) const {
             .headers = {{"content-type", "application/json"}, {"x-request-id", request.request_id}}};
   }
 
-  // Redis-backed API rate limit (fail-open if Redis unavailable).
+  // Phase 10: tenant extraction + namespace isolation guard.
+  const auto tenant_it = request.headers.find("x-tenant-id");
+  const auto tenant_id = (tenant_it != request.headers.end() && !tenant_it->second.empty())
+                             ? tenant_it->second
+                             : std::string("default");
+
+  // Simple namespace policy: tenant header required for non-health endpoints in strict mode.
+  const auto strict_it = request.headers.find("x-chronos-strict-tenant");
+  const auto strict_tenant = (strict_it != request.headers.end() && strict_it->second == "true");
+  if (request.path != "/health" && strict_tenant && tenant_id == "default") {
+    return {.status = 403,
+            .body = R"({"error":{"code":"FORBIDDEN","message":"tenant namespace required"}})",
+            .headers = {{"content-type", "application/json"}, {"x-request-id", request.request_id}}};
+  }
+
+  if (context_->metrics) {
+    std::lock_guard<std::mutex> lock(context_->metrics->tenant_mu);
+    context_->metrics->tenant_requests_total[tenant_id] += 1;
+  }
+
+  // Redis-backed multi-tenant quota (fail-open if Redis unavailable).
   if (request.path != "/health" && context_->coordination) {
-    const auto bucket = std::string("api:global:") + request.method;
+    const auto bucket = std::string("api:tenant:") + tenant_id + ":" + request.method;
     const auto allowed = context_->coordination->TryConsumeRate(bucket, 100, std::chrono::seconds(60));
     if (!allowed) {
       return {.status = 429,
-              .body = R"({"error":{"code":"RATE_LIMITED","message":"rate limit exceeded"}})",
+              .body = R"({"error":{"code":"RATE_LIMITED","message":"tenant quota exceeded"}})",
               .headers = {{"content-type", "application/json"}, {"x-request-id", request.request_id}}};
     }
   }
 
   auto response = router_.Handle(request);
   response.headers["x-request-id"] = request.request_id;
+
+  // Phase 10: lightweight audit event emission (structured, searchable).
+  observability::Log(
+      observability::LogLevel::kInfo,
+      context_->service_name,
+      request.request_id,
+      "audit_http_request",
+      "{\"tenant_id\":\"" + tenant_id +
+          "\",\"method\":\"" + request.method +
+          "\",\"path\":\"" + request.path +
+          "\",\"status\":" + std::to_string(response.status) + "}");
+
+  if (context_->metrics) {
+    context_->metrics->audit_events_total.fetch_add(1);
+  }
+
   return response;
 }
 
