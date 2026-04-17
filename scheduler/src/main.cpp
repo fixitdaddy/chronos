@@ -1,6 +1,7 @@
 #include <iostream>
 #include <memory>
 
+#include "chronos/coordination/redis_coordination.hpp"
 #include "chronos/messaging/in_memory_queue_broker.hpp"
 #include "chronos/persistence/in_memory/in_memory_repositories.hpp"
 #include "chronos/scheduler/core/scheduler_loop.hpp"
@@ -22,6 +23,7 @@ int main() {
   auto broker = std::make_shared<messaging::InMemoryQueueBroker>();
   auto publisher = std::make_shared<scheduler::messaging::RabbitMqPublisher>(broker);
   auto lease_store = std::make_shared<scheduler::leader::InMemoryLeaseStore>();
+  auto coordination = std::make_shared<coordination::InMemoryRedisCoordination>();
 
   domain::JobSchedule schedule;
   schedule.schedule_id = "sched-1";
@@ -41,7 +43,8 @@ int main() {
       local_executor,
       publisher,
       broker,
-      lease_store);
+      lease_store,
+      coordination);
 
   auto metrics = std::make_shared<scheduler::metrics::SchedulerMetrics>();
 

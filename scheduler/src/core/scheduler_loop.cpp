@@ -1,6 +1,7 @@
 #include "chronos/scheduler/core/scheduler_loop.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <optional>
 #include <string>
 #include <utility>
@@ -35,7 +36,8 @@ SchedulerLoop::SchedulerLoop(
     std::shared_ptr<executor::LocalExecutor> local_executor,
     std::shared_ptr<messaging::RabbitMqPublisher> publisher,
     std::shared_ptr<chronos::messaging::IQueueBroker> broker,
-    std::shared_ptr<leader::ILeaseStore> lease_store)
+    std::shared_ptr<leader::ILeaseStore> lease_store,
+    std::shared_ptr<coordination::IRedisCoordination> coordination)
     : config_(std::move(config)),
       schedule_repository_(std::move(schedule_repository)),
       execution_repository_(std::move(execution_repository)),
@@ -43,7 +45,8 @@ SchedulerLoop::SchedulerLoop(
       local_executor_(std::move(local_executor)),
       publisher_(std::move(publisher)),
       broker_(std::move(broker)),
-      lease_store_(std::move(lease_store)) {}
+      lease_store_(std::move(lease_store)),
+      coordination_(std::move(coordination)) {}
 
 bool SchedulerLoop::Tick(const std::string& scheduler_id, const std::string& fence_token) {
   // Fencing check: old leader must not schedule after lease loss.
@@ -81,6 +84,17 @@ bool SchedulerLoop::Tick(const std::string& scheduler_id, const std::string& fen
     if (!duplicate_guard_.TryMarkDispatched(dispatch_key)) {
       observability::Log("warn", "duplicate_dispatch_prevented", "{\"dispatch_key\":\"" + dispatch_key + "\"}");
       continue;
+    }
+
+    // Redis dedupe key (coordination aid only; fail-open if unavailable).
+    if (coordination_) {
+      const auto redis_dedupe_ok = coordination_->TryRegisterDedupe(
+          "dispatch:" + dispatch_key,
+          std::chrono::seconds(30));
+      if (!redis_dedupe_ok) {
+        observability::Log("warn", "redis_dispatch_dedupe_hit", "{\"dispatch_key\":\"" + dispatch_key + "\"}");
+        continue;
+      }
     }
 
     domain::JobExecution execution;
@@ -144,6 +158,16 @@ bool SchedulerLoop::Tick(const std::string& scheduler_id, const std::string& fen
 
     if (broker_->QueueDepth(chronos::messaging::kMainQueue) == 0) {
       local_executor_->Execute(execution.execution_id);
+    }
+
+    // Optional distributed lock for any external side-effect path where DB constraints are insufficient.
+    if (coordination_) {
+      const auto lock_key = "exec-window:" + execution.execution_id;
+      const auto owner = scheduler_id + ":" + fence_token;
+      const auto locked = coordination_->TryLock(lock_key, owner, std::chrono::seconds(15));
+      if (locked) {
+        coordination_->Unlock(lock_key, owner);
+      }
     }
   }
 

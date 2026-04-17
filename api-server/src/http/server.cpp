@@ -1,5 +1,6 @@
 #include "chronos/api/http/server.hpp"
 
+#include <chrono>
 #include <utility>
 
 #include "chronos/api/handlers/dead_letter_handlers.hpp"
@@ -74,6 +75,17 @@ HttpResponse ApiServer::Handle(HttpRequest request) const {
     return {.status = 401,
             .body = R"({"error":{"code":"UNAUTHORIZED","message":"missing or invalid bearer token"}})",
             .headers = {{"content-type", "application/json"}, {"x-request-id", request.request_id}}};
+  }
+
+  // Redis-backed API rate limit (fail-open if Redis unavailable).
+  if (request.path != "/health" && context_->coordination) {
+    const auto bucket = std::string("api:global:") + request.method;
+    const auto allowed = context_->coordination->TryConsumeRate(bucket, 100, std::chrono::seconds(60));
+    if (!allowed) {
+      return {.status = 429,
+              .body = R"({"error":{"code":"RATE_LIMITED","message":"rate limit exceeded"}})",
+              .headers = {{"content-type", "application/json"}, {"x-request-id", request.request_id}}};
+    }
   }
 
   auto response = router_.Handle(request);

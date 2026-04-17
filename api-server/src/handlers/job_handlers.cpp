@@ -1,6 +1,7 @@
 #include "chronos/api/handlers/job_handlers.hpp"
 
 #include <atomic>
+#include <chrono>
 
 #include "chronos/api/validation/job_validation.hpp"
 #include "chronos/time/clock.hpp"
@@ -79,6 +80,15 @@ http::HttpResponse HandleGetJobById(
             .headers = {{"content-type", "application/json"}}};
   }
 
+  if (context->coordination) {
+    const auto cached = context->coordination->GetCache("job:" + it->second);
+    if (cached.has_value()) {
+      return {.status = 200,
+              .body = cached.value(),
+              .headers = {{"content-type", "application/json"}}};
+    }
+  }
+
   const auto job = context->job_repository->GetJobById(it->second);
   if (!job.has_value()) {
     return {.status = 404,
@@ -86,11 +96,17 @@ http::HttpResponse HandleGetJobById(
             .headers = {{"content-type", "application/json"}}};
   }
 
+  const auto body = "{\"job_id\":\"" + job->job_id +
+                    "\",\"name\":\"" + EscapeJson(job->name) +
+                    "\",\"task_type\":\"" + EscapeJson(job->task_type) +
+                    "\",\"job_state\":\"ACTIVE\"}";
+
+  if (context->coordination) {
+    context->coordination->PutCache("job:" + it->second, body, std::chrono::seconds(10));
+  }
+
   return {.status = 200,
-          .body = "{\"job_id\":\"" + job->job_id +
-                  "\",\"name\":\"" + EscapeJson(job->name) +
-                  "\",\"task_type\":\"" + EscapeJson(job->task_type) +
-                  "\",\"job_state\":\"ACTIVE\"}",
+          .body = body,
           .headers = {{"content-type", "application/json"}}};
 }
 
@@ -105,6 +121,16 @@ http::HttpResponse HandleGetJobExecutions(
     return {.status = 400,
             .body = R"({"error":{"code":"VALIDATION_ERROR","message":"id path param missing"}})",
             .headers = {{"content-type", "application/json"}}};
+  }
+
+  if (context->coordination) {
+    const auto bucket = std::string("execution-cap:job:") + it->second;
+    const auto allowed = context->coordination->TryConsumeRate(bucket, 1000, std::chrono::seconds(60));
+    if (!allowed) {
+      return {.status = 429,
+              .body = R"({"error":{"code":"RATE_LIMITED","message":"per-job execution cap exceeded"}})",
+              .headers = {{"content-type", "application/json"}}};
+    }
   }
 
   const auto executions = context->execution_repository->GetExecutionHistoryForJob(it->second, 50, 0);

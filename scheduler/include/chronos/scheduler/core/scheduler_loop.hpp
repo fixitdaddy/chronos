@@ -3,6 +3,7 @@
 #include <chrono>
 #include <memory>
 
+#include "chronos/coordination/redis_coordination.hpp"
 #include "chronos/messaging/queue_broker.hpp"
 #include "chronos/persistence/repository.hpp"
 #include "chronos/scheduler/executor/local_executor.hpp"
@@ -29,7 +30,8 @@ class SchedulerLoop {
       std::shared_ptr<executor::LocalExecutor> local_executor,
       std::shared_ptr<messaging::RabbitMqPublisher> publisher,
       std::shared_ptr<chronos::messaging::IQueueBroker> broker,
-      std::shared_ptr<leader::ILeaseStore> lease_store);
+      std::shared_ptr<leader::ILeaseStore> lease_store,
+      std::shared_ptr<coordination::IRedisCoordination> coordination);
 
   // Returns false when fencing check fails.
   bool Tick(const std::string& scheduler_id, const std::string& fence_token);
@@ -43,6 +45,7 @@ class SchedulerLoop {
   std::shared_ptr<messaging::RabbitMqPublisher> publisher_;
   std::shared_ptr<chronos::messaging::IQueueBroker> broker_;
   std::shared_ptr<leader::ILeaseStore> lease_store_;
+  std::shared_ptr<coordination::IRedisCoordination> coordination_;
   scheduling::DuplicateDispatchGuard duplicate_guard_;
 };
 

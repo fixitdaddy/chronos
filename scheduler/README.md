@@ -5,15 +5,14 @@ execution attempts.
 
 It is the only component that decides when a job should run.
 
-## Phase 6 status
+## Phase 7 status
 
-Added distributed-scheduler runtime primitives:
+Added Redis-coordination-style protections in dispatch flow:
 
-- lease-based leader election abstraction (local in-memory lease store)
-- leader-only dispatch loop, follower warm mode
-- fencing-token checks before scheduling
-- bounded, jittered scan runtime with catch-up caps
-- scheduler election/scan/dispatch metrics
-- leader failover test harness
+- optional distributed execution-window lock use
+- dispatch-window dedupe keys
+- fail-open behavior for non-critical coordination paths
 
-Current local mode is implementation-complete at architecture level; production etcd adapter wiring is the next hardening step.
+Correctness still depends on durable DB state transitions and queue workflows; coordination is additive, not authoritative.
+
+Distributed scheduler (leader/follower/fencing/runtime metrics) remains active from Phase 6.

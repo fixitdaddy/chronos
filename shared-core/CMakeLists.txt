@@ -10,6 +10,7 @@ set(CHRONOS_SHARED_CORE_SOURCES
   src/messaging/in_memory_queue_broker.cpp
   src/recovery/recovery_scanner.cpp
   src/idempotency/idempotency_store.cpp
+  src/coordination/redis_coordination.cpp
 )
 
 add_library(chronos-shared-core STATIC ${CHRONOS_SHARED_CORE_SOURCES})

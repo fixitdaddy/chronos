@@ -3,6 +3,7 @@
 #include <memory>
 #include <thread>
 
+#include "chronos/coordination/redis_coordination.hpp"
 #include "chronos/messaging/in_memory_queue_broker.hpp"
 #include "chronos/persistence/in_memory/in_memory_repositories.hpp"
 #include "chronos/scheduler/core/scheduler_loop.hpp"
@@ -26,6 +27,7 @@ struct RuntimeBundle {
 RuntimeBundle MakeRuntime(
     const std::string& scheduler_id,
     const std::shared_ptr<scheduler::leader::InMemoryLeaseStore>& lease_store,
+    const std::shared_ptr<coordination::InMemoryRedisCoordination>& coordination,
     const std::shared_ptr<persistence::in_memory::InMemoryScheduleRepository>& schedules,
     const std::shared_ptr<persistence::in_memory::InMemoryExecutionRepository>& executions,
     const std::shared_ptr<persistence::in_memory::InMemoryOutboxRepository>& outbox,
@@ -44,7 +46,8 @@ RuntimeBundle MakeRuntime(
       local_executor,
       publisher,
       broker,
-      lease_store);
+      lease_store,
+      coordination);
 
   scheduler::leader::LeaseElection::Config ecfg;
   ecfg.lease_key = loop_cfg.lease_key;
@@ -77,6 +80,7 @@ bool TestLeaderHandoff() {
   auto outbox = std::make_shared<persistence::in_memory::InMemoryOutboxRepository>();
   auto broker = std::make_shared<messaging::InMemoryQueueBroker>();
   auto lease_store = std::make_shared<scheduler::leader::InMemoryLeaseStore>();
+  auto coordination = std::make_shared<coordination::InMemoryRedisCoordination>();
 
   domain::JobSchedule schedule;
   schedule.schedule_id = "sched-failover-1";
@@ -86,8 +90,8 @@ bool TestLeaderHandoff() {
   schedule.active = true;
   schedules->UpsertSchedule(schedule);
 
-  auto a = MakeRuntime("scheduler-A", lease_store, schedules, executions, outbox, broker);
-  auto b = MakeRuntime("scheduler-B", lease_store, schedules, executions, outbox, broker);
+  auto a = MakeRuntime("scheduler-A", lease_store, coordination, schedules, executions, outbox, broker);
+  auto b = MakeRuntime("scheduler-B", lease_store, coordination, schedules, executions, outbox, broker);
 
   const auto a_ran = a.runtime->Tick();
   const auto b_ran = b.runtime->Tick();

@@ -32,3 +32,6 @@ target_link_libraries(chronos-scheduler PRIVATE chronos-scheduler-lib)
 
 add_executable(chronos-leader-failover-tests ../tests/leader-failover/leader_failover_tests.cpp)
 target_link_libraries(chronos-leader-failover-tests PRIVATE chronos-scheduler-lib)
+
+add_executable(chronos-redis-coordination-tests ../tests/redis-coordination/redis_coordination_tests.cpp)
+target_link_libraries(chronos-redis-coordination-tests PRIVATE chronos-scheduler-lib)

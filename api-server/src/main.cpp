@@ -4,6 +4,7 @@
 
 #include "chronos/api/handlers/context.hpp"
 #include "chronos/api/http/server.hpp"
+#include "chronos/coordination/redis_coordination.hpp"
 #include "chronos/persistence/in_memory/in_memory_repositories.hpp"
 
 int main() {
@@ -20,6 +21,7 @@ int main() {
   context->schedule_repository = schedules;
   context->execution_repository = executions;
   context->in_memory_execution_repository = executions;
+  context->coordination = std::make_shared<coordination::InMemoryRedisCoordination>();
   context->metrics = metrics;
 
   api::http::ApiServer server(context, "dev-token");

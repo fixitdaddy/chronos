@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 
+#include "chronos/coordination/redis_coordination.hpp"
 #include "chronos/persistence/in_memory/in_memory_repositories.hpp"
 #include "chronos/persistence/repository.hpp"
 
@@ -21,6 +22,7 @@ struct HandlerContext {
   std::shared_ptr<persistence::IScheduleRepository> schedule_repository;
   std::shared_ptr<persistence::IExecutionRepository> execution_repository;
   std::shared_ptr<persistence::in_memory::InMemoryExecutionRepository> in_memory_execution_repository;
+  std::shared_ptr<coordination::IRedisCoordination> coordination;
   std::shared_ptr<Metrics> metrics;
   std::string service_name{"api-server"};
 };
