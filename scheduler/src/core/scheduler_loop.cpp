@@ -72,6 +72,7 @@ void SchedulerLoop::Tick() {
     execution.scheduled_at = decision.intended_run_at.value();
     execution.state = domain::ExecutionState::kPending;
     execution.max_attempts = 3;
+    execution.idempotency_key = execution.execution_id;
     execution.created_at = now;
     execution.updated_at = now;
 

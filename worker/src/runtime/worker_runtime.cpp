@@ -1,11 +1,13 @@
 #include "chronos/worker/runtime/worker_runtime.hpp"
 
+#include <chrono>
 #include <future>
 #include <optional>
 #include <stdexcept>
 #include <thread>
 #include <utility>
 
+#include "chronos/idempotency/idempotency_store.hpp"
 #include "chronos/worker/observability/logger.hpp"
 
 namespace chronos::worker::runtime {
@@ -53,6 +55,20 @@ bool WorkerRuntime::SubmitExecution(
                   max_attempts,
                   task_type,
                   handler = *handler]() {
+      static idempotency::InMemoryIdempotencyStore idempotency_store;
+      const auto lock_acquired = idempotency_store.TryAcquire(
+          idempotency_key,
+          execution_id,
+          std::chrono::seconds(30));
+
+      if (!lock_acquired) {
+        task::TaskResult duplicate_result;
+        duplicate_result.kind = task::TaskResultKind::kSuccess;
+        duplicate_result.metadata_json = "{\"deduplicated\":true}";
+        result_handler_.ApplyResult(execution_id, duplicate_result, config_.worker_id, 1, max_attempts);
+        return;
+      }
+
       execution::HeartbeatManager heartbeat(
           config_.worker_id,
           execution_repository_,
@@ -83,6 +99,7 @@ bool WorkerRuntime::SubmitExecution(
 
       heartbeat.Stop();
       result_handler_.ApplyResult(execution_id, result, config_.worker_id, 1, max_attempts);
+      idempotency_store.Release(idempotency_key, execution_id);
     });
   } catch (const std::exception&) {
     return false;

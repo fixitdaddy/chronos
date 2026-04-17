@@ -5,15 +5,13 @@ Workers consume execution messages and run task handlers asynchronously.
 They own execution runtime concerns such as claiming, heartbeats, timeouts,
 retries, and graceful shutdown.
 
-## Phase 4 status
+## Phase 5 status
 
-Implemented RabbitMQ-style consumer flow (MVP) with:
+Added retry/recovery/failure-management behaviors:
 
-- consume from `main_queue` and `retry_queue`
-- manual `ack` after successful runtime submission
-- `nack` + reroute to `retry_queue` on runtime rejection
-- `nack` + reroute to `dead_letter_queue` on decode failure
+- retryable-error classification + backoff-aware dead-letter decisions
+- runtime idempotency lock around task execution
+- poison-job detector with quarantine threshold
+- failure scenario harness (`chronos-failure-scenarios`)
 
-DB remains source of truth because claim/state transition occurs before message ack.
-
-Current implementation runs against queue broker abstraction with in-memory broker in local mode.
+Consumer and runtime continue to ensure durable state transition before queue ack.

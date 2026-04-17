@@ -47,6 +47,7 @@ struct RetryPolicy {
   std::int32_t initial_delay_seconds{0};
   std::int32_t max_delay_seconds{0};
   double backoff_multiplier{1.0};
+  std::string retryable_error_codes_csv{"NETWORK_ERROR,RATE_LIMITED,TIMEOUT,WORKER_LOST,DEPENDENCY_FAILURE"};
 };
 
 struct Job {
@@ -92,11 +93,14 @@ struct JobExecution {
   ExecutionState state{ExecutionState::kPending};
   std::int32_t attempt_count{0};
   std::int32_t max_attempts{1};
+  std::optional<std::string> idempotency_key;
   std::optional<std::string> current_worker_id;
   std::optional<Timestamp> last_heartbeat_at;
   std::optional<std::string> result_summary_json;
   std::optional<std::string> last_error_code;
   std::optional<std::string> last_error_message;
+  std::int32_t poison_count{0};
+  std::optional<Timestamp> quarantined_at;
   Timestamp created_at{};
   Timestamp updated_at{};
 };

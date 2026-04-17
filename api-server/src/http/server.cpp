@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include "chronos/api/handlers/dead_letter_handlers.hpp"
 #include "chronos/api/handlers/health_handlers.hpp"
 #include "chronos/api/handlers/job_handlers.hpp"
 #include "chronos/api/handlers/metrics_handlers.hpp"
@@ -38,6 +39,24 @@ ApiServer::ApiServer(
 
   router_.Register("GET", "/metrics", [ctx = context_](const HttpRequest& req) {
     return handlers::HandleMetrics(req, ctx);
+  });
+
+  router_.Register("GET", "/dead-letter/executions", [ctx = context_](const HttpRequest& req) {
+    if (!ctx->in_memory_execution_repository) {
+      return HttpResponse{.status = 501,
+                          .body = R"({"error":{"code":"NOT_IMPLEMENTED","message":"dead-letter inspection only available in local in-memory mode"}})",
+                          .headers = {{"content-type", "application/json"}}};
+    }
+    return handlers::HandleGetDeadLetterExecutions(req, ctx, ctx->in_memory_execution_repository);
+  });
+
+  router_.Register("POST", "/dead-letter/executions/:execution_id/quarantine", [ctx = context_](const HttpRequest& req) {
+    if (!ctx->in_memory_execution_repository) {
+      return HttpResponse{.status = 501,
+                          .body = R"({"error":{"code":"NOT_IMPLEMENTED","message":"quarantine endpoint only available in local in-memory mode"}})",
+                          .headers = {{"content-type", "application/json"}}};
+    }
+    return handlers::HandleQuarantineExecution(req, ctx->in_memory_execution_repository);
   });
 }
 

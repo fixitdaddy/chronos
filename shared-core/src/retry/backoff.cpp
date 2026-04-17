@@ -2,8 +2,26 @@
 
 #include <algorithm>
 #include <cmath>
+#include <sstream>
+#include <string>
+#include <vector>
 
 namespace chronos::retry {
+namespace {
+
+std::vector<std::string> SplitCsv(const std::string& csv) {
+  std::vector<std::string> out;
+  std::stringstream ss(csv);
+  std::string item;
+  while (std::getline(ss, item, ',')) {
+    if (!item.empty()) {
+      out.push_back(item);
+    }
+  }
+  return out;
+}
+
+}  // namespace
 
 std::int32_t ComputeDelaySeconds(
     const domain::RetryPolicy& policy,
@@ -26,7 +44,19 @@ std::int32_t ComputeDelaySeconds(
     return std::min(raw_delay, std::max(policy.initial_delay_seconds, policy.max_delay_seconds));
   }
 
+  // FIXED and fallback behavior.
   return std::max(0, policy.initial_delay_seconds);
+}
+
+bool IsRetryableError(
+    const domain::RetryPolicy& policy,
+    const std::string& error_code) {
+  if (error_code.empty()) {
+    return true;
+  }
+
+  const auto codes = SplitCsv(policy.retryable_error_codes_csv);
+  return std::find(codes.begin(), codes.end(), error_code) != codes.end();
 }
 
 bool ShouldMoveToDeadLetter(
@@ -34,6 +64,10 @@ bool ShouldMoveToDeadLetter(
     const domain::RetryPolicy& policy,
     const std::string& error_code) {
   if (attempt_number >= policy.max_attempts) {
+    return true;
+  }
+
+  if (!IsRetryableError(policy, error_code)) {
     return true;
   }
 

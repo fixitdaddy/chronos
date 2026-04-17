@@ -8,6 +8,8 @@ set(CHRONOS_SHARED_CORE_SOURCES
   src/persistence/in_memory/in_memory_repositories.cpp
   src/messaging/message_codec.cpp
   src/messaging/in_memory_queue_broker.cpp
+  src/recovery/recovery_scanner.cpp
+  src/idempotency/idempotency_store.cpp
 )
 
 add_library(chronos-shared-core STATIC ${CHRONOS_SHARED_CORE_SOURCES})

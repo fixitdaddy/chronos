@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 
+#include "chronos/persistence/in_memory/in_memory_repositories.hpp"
 #include "chronos/persistence/repository.hpp"
 
 namespace chronos::api::handlers {
@@ -19,6 +20,7 @@ struct HandlerContext {
   std::shared_ptr<persistence::IJobRepository> job_repository;
   std::shared_ptr<persistence::IScheduleRepository> schedule_repository;
   std::shared_ptr<persistence::IExecutionRepository> execution_repository;
+  std::shared_ptr<persistence::in_memory::InMemoryExecutionRepository> in_memory_execution_repository;
   std::shared_ptr<Metrics> metrics;
   std::string service_name{"api-server"};
 };

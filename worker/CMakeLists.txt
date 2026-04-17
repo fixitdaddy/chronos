@@ -7,6 +7,7 @@ set(CHRONOS_WORKER_SOURCES
   src/execution/heartbeat_manager.cpp
   src/execution/result_handler.cpp
   src/messaging/rabbitmq_consumer.cpp
+  src/recovery/poison_detector.cpp
   src/observability/logger.cpp
 )
 
@@ -29,3 +30,6 @@ target_link_libraries(chronos-worker PRIVATE chronos-worker-lib)
 
 add_executable(chronos-worker-stress src/stress/local_stress.cpp)
 target_link_libraries(chronos-worker-stress PRIVATE chronos-worker-lib)
+
+add_executable(chronos-failure-scenarios ../tests/failure-scenarios/failure_scenarios.cpp)
+target_link_libraries(chronos-failure-scenarios PRIVATE chronos-worker-lib)

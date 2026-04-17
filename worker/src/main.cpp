@@ -33,6 +33,7 @@ int main() {
   execution.scheduled_at = time::UtcNow();
   execution.state = domain::ExecutionState::kDispatched;
   execution.max_attempts = 3;
+  execution.idempotency_key = std::string("idem-1");
   execution.created_at = time::UtcNow();
   execution.updated_at = execution.created_at;
   executions->CreateExecution(execution);

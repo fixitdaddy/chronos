@@ -19,6 +19,7 @@ int main() {
   context->job_repository = jobs;
   context->schedule_repository = schedules;
   context->execution_repository = executions;
+  context->in_memory_execution_repository = executions;
   context->metrics = metrics;
 
   api::http::ApiServer server(context, "dev-token");

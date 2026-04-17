@@ -11,6 +11,10 @@ std::int32_t ComputeDelaySeconds(
     const domain::RetryPolicy& policy,
     std::int32_t attempt_number);
 
+bool IsRetryableError(
+    const domain::RetryPolicy& policy,
+    const std::string& error_code);
+
 bool ShouldMoveToDeadLetter(
     std::int32_t attempt_number,
     const domain::RetryPolicy& policy,

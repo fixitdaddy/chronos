@@ -96,6 +96,18 @@ InMemoryExecutionRepository::InMemoryExecutionRepository(
 
 bool InMemoryExecutionRepository::CreateExecution(const domain::JobExecution& execution) {
   std::lock_guard<std::mutex> lock(mu_);
+
+  // DB uniqueness + idempotency emulation: reject duplicate idempotency key
+  // when mapped to a different execution id.
+  if (execution.idempotency_key.has_value()) {
+    const auto& key = execution.idempotency_key.value();
+    const auto it = processed_idempotency_keys_.find(key);
+    if (it != processed_idempotency_keys_.end() && it->second != execution.execution_id) {
+      return false;
+    }
+    processed_idempotency_keys_[key] = execution.execution_id;
+  }
+
   const auto [_, inserted] = executions_.emplace(execution.execution_id, execution);
   return inserted;
 }
@@ -108,6 +120,58 @@ std::optional<domain::JobExecution> InMemoryExecutionRepository::GetExecutionByI
     return std::nullopt;
   }
   return it->second;
+}
+
+std::vector<domain::JobExecution> InMemoryExecutionRepository::GetAllExecutions() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  std::vector<domain::JobExecution> all;
+  all.reserve(executions_.size());
+  for (const auto& [_, execution] : executions_) {
+    all.push_back(execution);
+  }
+  return all;
+}
+
+std::vector<domain::JobExecution> InMemoryExecutionRepository::GetDeadLetterExecutions(
+    std::size_t limit,
+    std::size_t offset) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  std::vector<domain::JobExecution> out;
+  for (const auto& [_, execution] : executions_) {
+    if (execution.state == domain::ExecutionState::kDeadLetter) {
+      out.push_back(execution);
+    }
+  }
+
+  std::sort(
+      out.begin(),
+      out.end(),
+      [](const domain::JobExecution& lhs, const domain::JobExecution& rhs) {
+        return lhs.execution_number > rhs.execution_number;
+      });
+
+  if (offset >= out.size()) {
+    return {};
+  }
+
+  const auto end = std::min(out.size(), offset + limit);
+  return {out.begin() + static_cast<std::ptrdiff_t>(offset),
+          out.begin() + static_cast<std::ptrdiff_t>(end)};
+}
+
+bool InMemoryExecutionRepository::MarkExecutionQuarantined(const std::string& execution_id) {
+  std::lock_guard<std::mutex> lock(mu_);
+  const auto it = executions_.find(execution_id);
+  if (it == executions_.end()) {
+    return false;
+  }
+
+  it->second.poison_count += 1;
+  it->second.quarantined_at = time::UtcNow();
+  it->second.last_error_code = std::string("POISON_QUARANTINED");
+  it->second.last_error_message = std::string("execution moved to quarantine");
+  it->second.updated_at = time::UtcNow();
+  return true;
 }
 
 bool InMemoryExecutionRepository::TransitionExecutionState(

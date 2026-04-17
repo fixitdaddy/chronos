@@ -61,6 +61,9 @@ class InMemoryExecutionRepository final : public IExecutionRepository {
 
   bool CreateExecution(const domain::JobExecution& execution) override;
   std::optional<domain::JobExecution> GetExecutionById(const std::string& execution_id) override;
+  std::vector<domain::JobExecution> GetAllExecutions() const;
+  std::vector<domain::JobExecution> GetDeadLetterExecutions(std::size_t limit, std::size_t offset) const;
+  bool MarkExecutionQuarantined(const std::string& execution_id);
   bool TransitionExecutionState(
       const std::string& execution_id,
       domain::ExecutionState expected_from,
@@ -81,10 +84,11 @@ class InMemoryExecutionRepository final : public IExecutionRepository {
       std::size_t offset) override;
 
  private:
-  std::mutex mu_;
+  mutable std::mutex mu_;
   std::unordered_map<std::string, domain::JobExecution> executions_;
   std::unordered_map<std::string, domain::JobAttempt> attempts_;
   std::vector<domain::WorkerHeartbeat> heartbeats_;
+  std::unordered_map<std::string, std::string> processed_idempotency_keys_;  // key -> execution_id
   std::shared_ptr<IAuditRepository> audit_repository_;
 };
 

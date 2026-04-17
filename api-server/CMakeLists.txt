@@ -8,6 +8,7 @@ set(CHRONOS_API_SERVER_SOURCES
   src/handlers/schedule_handlers.cpp
   src/handlers/health_handlers.cpp
   src/handlers/metrics_handlers.cpp
+  src/handlers/dead_letter_handlers.cpp
   src/observability/logger.cpp
 )
 
