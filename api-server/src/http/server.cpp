@@ -10,6 +10,7 @@
 #include "chronos/api/handlers/job_handlers.hpp"
 #include "chronos/api/handlers/metrics_handlers.hpp"
 #include "chronos/api/handlers/schedule_handlers.hpp"
+#include "chronos/api/handlers/vigil_integration_handlers.hpp"
 #include "chronos/api/middleware/request_id_middleware.hpp"
 #include "chronos/api/observability/logger.hpp"
 
@@ -42,6 +43,23 @@ ApiServer::ApiServer(
 
   router_.Register("GET", "/metrics", [ctx = context_](const HttpRequest& req) {
     return handlers::HandleMetrics(req, ctx);
+  });
+
+  // Phase 1.1 vigil -> chronos integration contract routes.
+  router_.Register("POST", "/v1/integrations/vigil/remediation-jobs", [ctx = context_](const HttpRequest& req) {
+    return handlers::HandleCreateVigilRemediationJob(req, ctx);
+  });
+
+  router_.Register("GET", "/v1/integrations/vigil/remediation-jobs/:id", [ctx = context_](const HttpRequest& req) {
+    return handlers::HandleGetVigilRemediationJobById(req, ctx);
+  });
+
+  router_.Register("POST", "/v1/integrations/vigil/remediation-jobs/:id:cancel", [ctx = context_](const HttpRequest& req) {
+    return handlers::HandleCancelVigilRemediationJob(req, ctx);
+  });
+
+  router_.Register("GET", "/v1/integrations/vigil/actions/:vigilActionId", [ctx = context_](const HttpRequest& req) {
+    return handlers::HandleGetVigilActionStatus(req, ctx);
   });
 
   router_.Register("GET", "/dead-letter/executions", [ctx = context_](const HttpRequest& req) {

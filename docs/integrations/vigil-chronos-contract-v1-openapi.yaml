@@ -1,0 +1,300 @@
+openapi: 3.0.3
+info:
+  title: vigil -> chronos integration contract
+  version: 1.0.0
+  description: |
+    Contract v1 for vigil remediation dispatch into chronos.
+servers:
+  - url: http://localhost:8080
+paths:
+  /v1/integrations/vigil/remediation-jobs:
+    post:
+      summary: Create remediation job
+      operationId: createVigilRemediationJob
+      tags: [vigil-integration]
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/XCorrelationId'
+        - $ref: '#/components/parameters/XVigilIncidentId'
+        - $ref: '#/components/parameters/XVigilActionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRemediationJobRequest'
+      responses:
+        '202':
+          description: Accepted
+          headers:
+            Idempotency-Replayed:
+              schema: { type: string, enum: ["true", "false"] }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateRemediationJobResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Idempotency conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/integrations/vigil/remediation-jobs/{id}:
+    get:
+      summary: Get remediation job by id
+      operationId: getVigilRemediationJobById
+      tags: [vigil-integration]
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetRemediationJobResponse'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/integrations/vigil/remediation-jobs/{id}:cancel:
+    post:
+      summary: Cancel remediation job
+      operationId: cancelVigilRemediationJob
+      tags: [vigil-integration]
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '202':
+          description: Cancel accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelRemediationJobResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/integrations/vigil/actions/{vigilActionId}:
+    get:
+      summary: Get status by vigil action id
+      operationId: getStatusByVigilActionId
+      tags: [vigil-integration]
+      parameters:
+        - $ref: '#/components/parameters/XTenantId'
+        - name: vigilActionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetVigilActionStatusResponse'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  parameters:
+    XTenantId:
+      name: X-Tenant-Id
+      in: header
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 64 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    XRequestId:
+      name: X-Request-Id
+      in: header
+      required: true
+      schema: { type: string }
+    XCorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: true
+      schema: { type: string }
+    XVigilIncidentId:
+      name: X-Vigil-Incident-Id
+      in: header
+      required: true
+      schema: { type: string }
+    XVigilActionId:
+      name: X-Vigil-Action-Id
+      in: header
+      required: true
+      schema: { type: string }
+  schemas:
+    CreateRemediationJobRequest:
+      type: object
+      required:
+        - tenantId
+        - incident
+        - action
+        - target
+        - execution
+        - schedule
+        - audit
+      properties:
+        tenantId: { type: string }
+        incident:
+          type: object
+          required: [id, policyId, severity]
+          properties:
+            id: { type: string }
+            policyId: { type: string }
+            severity:
+              type: string
+              enum: [low, medium, high, critical]
+        action:
+          type: object
+          required: [id, type, version]
+          properties:
+            id: { type: string }
+            type: { type: string }
+            version: { type: string }
+        target:
+          type: object
+          required: [resourceType, resourceId]
+          properties:
+            resourceType: { type: string }
+            resourceId: { type: string }
+            labels:
+              type: object
+              additionalProperties: { type: string }
+        execution:
+          type: object
+          required: [taskRef, input, retryPolicy, timeoutSeconds]
+          properties:
+            taskRef: { type: string }
+            input:
+              type: object
+              additionalProperties: true
+            retryPolicy:
+              type: object
+              required: [maxAttempts, backoff, baseDelayMs, maxDelayMs]
+              properties:
+                maxAttempts: { type: integer, minimum: 1 }
+                backoff:
+                  type: string
+                  enum: [fixed, exponential, exponential_jitter]
+                baseDelayMs: { type: integer, minimum: 100 }
+                maxDelayMs: { type: integer, minimum: 1000 }
+            timeoutSeconds: { type: integer, minimum: 1 }
+        schedule:
+          type: object
+          oneOf:
+            - required: [kind, runAt]
+              properties:
+                kind: { type: string, enum: [once] }
+                runAt: { type: string, format: date-time }
+            - required: [kind, cron, timezone]
+              properties:
+                kind: { type: string, enum: [cron] }
+                cron: { type: string }
+                timezone: { type: string }
+        audit:
+          type: object
+          required: [requestedBy, reason]
+          properties:
+            requestedBy: { type: string }
+            reason: { type: string }
+            changeTicket: { type: string }
+    CreateRemediationJobResponse:
+      type: object
+      required: [remediationJobId, chronosJobId, executionId, tenantId, status, state, createdAt]
+      properties:
+        remediationJobId: { type: string }
+        chronosJobId: { type: string }
+        executionId: { type: string }
+        tenantId: { type: string }
+        status: { type: string, enum: [accepted] }
+        state: { type: string }
+        createdAt: { type: string, format: date-time }
+        links:
+          type: object
+          properties:
+            job: { type: string }
+            execution: { type: string }
+            integration: { type: string }
+    GetRemediationJobResponse:
+      type: object
+      required: [remediationJobId, tenantId, status, state]
+      properties:
+        remediationJobId: { type: string }
+        tenantId: { type: string }
+        status: { type: string }
+        state: { type: string }
+        chronosJobId: { type: string }
+        executionId: { type: string }
+    CancelRemediationJobResponse:
+      type: object
+      required: [remediationJobId, tenantId, status]
+      properties:
+        remediationJobId: { type: string }
+        tenantId: { type: string }
+        status: { type: string, enum: [cancel_requested] }
+    GetVigilActionStatusResponse:
+      type: object
+      required: [vigilActionId, tenantId, status]
+      properties:
+        vigilActionId: { type: string }
+        tenantId: { type: string }
+        status: { type: string }
+        chronosJobId: { type: string }
+        executionId: { type: string }
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
