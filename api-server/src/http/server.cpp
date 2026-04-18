@@ -13,8 +13,57 @@
 #include "chronos/api/handlers/vigil_integration_handlers.hpp"
 #include "chronos/api/middleware/request_id_middleware.hpp"
 #include "chronos/api/observability/logger.hpp"
+#include "chronos/time/clock.hpp"
 
 namespace chronos::api::http {
+namespace {
+
+std::string EscapeJson(const std::string& value) {
+  std::string out;
+  out.reserve(value.size());
+  for (const auto c : value) {
+    if (c == '"') {
+      out += "\\\"";
+    } else if (c == '\\') {
+      out += "\\\\";
+    } else {
+      out.push_back(c);
+    }
+  }
+  return out;
+}
+
+HttpResponse BuildNormalizedError(
+    int status,
+    const std::string& code,
+    const std::string& message,
+    const std::string& request_id,
+    const std::string& correlation_id,
+    bool retryable) {
+  const auto now = time::ToIso8601(time::UtcNow());
+  return {
+      .status = status,
+      .body =
+          "{"
+          "\"error\":{"
+          "\"code\":\"" + EscapeJson(code) + "\","
+          "\"message\":\"" + EscapeJson(message) + "\","
+          "\"httpStatus\":" + std::to_string(status) + ","
+          "\"retryable\":" + std::string(retryable ? "true" : "false") +
+          "},"
+          "\"requestId\":\"" + EscapeJson(request_id) + "\","
+          "\"correlationId\":\"" + EscapeJson(correlation_id) + "\","
+          "\"timestamp\":\"" + now + "\""
+          "}",
+      .headers = {
+          {"content-type", "application/json"},
+          {"x-request-id", request_id},
+          {"x-correlation-id", correlation_id},
+      },
+  };
+}
+
+}  // namespace
 
 ApiServer::ApiServer(
     std::shared_ptr<handlers::HandlerContext> context,
@@ -91,10 +140,22 @@ HttpResponse ApiServer::Handle(HttpRequest request) const {
       "incoming_request",
       "{\"method\":\"" + request.method + "\",\"path\":\"" + request.path + "\"}");
 
+  const auto correlation_id = [&request]() {
+    const auto it = request.headers.find("x-correlation-id");
+    if (it != request.headers.end() && !it->second.empty()) {
+      return it->second;
+    }
+    return request.request_id;
+  }();
+
   if (request.path != "/health" && !auth_middleware_.IsAuthorized(request)) {
-    return {.status = 401,
-            .body = R"({"error":{"code":"UNAUTHORIZED","message":"missing or invalid bearer token"}})",
-            .headers = {{"content-type", "application/json"}, {"x-request-id", request.request_id}}};
+    return BuildNormalizedError(
+        401,
+        "CHRONOS_UNAUTHORIZED",
+        "missing or invalid bearer token",
+        request.request_id,
+        correlation_id,
+        false);
   }
 
   // Phase 10: tenant extraction + namespace isolation guard.
@@ -107,9 +168,13 @@ HttpResponse ApiServer::Handle(HttpRequest request) const {
   const auto strict_it = request.headers.find("x-chronos-strict-tenant");
   const auto strict_tenant = (strict_it != request.headers.end() && strict_it->second == "true");
   if (request.path != "/health" && strict_tenant && tenant_id == "default") {
-    return {.status = 403,
-            .body = R"({"error":{"code":"FORBIDDEN","message":"tenant namespace required"}})",
-            .headers = {{"content-type", "application/json"}, {"x-request-id", request.request_id}}};
+    return BuildNormalizedError(
+        403,
+        "CHRONOS_FORBIDDEN_TENANT",
+        "tenant namespace required",
+        request.request_id,
+        correlation_id,
+        false);
   }
 
   if (context_->metrics) {
@@ -122,14 +187,52 @@ HttpResponse ApiServer::Handle(HttpRequest request) const {
     const auto bucket = std::string("api:tenant:") + tenant_id + ":" + request.method;
     const auto allowed = context_->coordination->TryConsumeRate(bucket, 100, std::chrono::seconds(60));
     if (!allowed) {
-      return {.status = 429,
-              .body = R"({"error":{"code":"RATE_LIMITED","message":"tenant quota exceeded"}})",
-              .headers = {{"content-type", "application/json"}, {"x-request-id", request.request_id}}};
+      return BuildNormalizedError(
+          429,
+          "CHRONOS_RATE_LIMITED",
+          "tenant quota exceeded",
+          request.request_id,
+          correlation_id,
+          true);
+    }
+  }
+
+  // deterministic fault injection hook for conformance testing
+  const auto fi = request.headers.find("x-chronos-fault-inject");
+  if (fi != request.headers.end()) {
+    if (fi->second == "500") {
+      return BuildNormalizedError(
+          500,
+          "CHRONOS_INTERNAL_ERROR",
+          "fault injection: internal error",
+          request.request_id,
+          correlation_id,
+          true);
+    }
+    if (fi->second == "503") {
+      return BuildNormalizedError(
+          503,
+          "CHRONOS_DEPENDENCY_UNAVAILABLE",
+          "fault injection: dependency unavailable",
+          request.request_id,
+          correlation_id,
+          true);
     }
   }
 
   auto response = router_.Handle(request);
+  if (response.status == 404) {
+    response = BuildNormalizedError(
+        404,
+        "CHRONOS_NOT_FOUND",
+        "route not found",
+        request.request_id,
+        correlation_id,
+        false);
+  }
+
   response.headers["x-request-id"] = request.request_id;
+  response.headers["x-correlation-id"] = correlation_id;
 
   // Phase 10: lightweight audit event emission (structured, searchable).
   observability::Log(

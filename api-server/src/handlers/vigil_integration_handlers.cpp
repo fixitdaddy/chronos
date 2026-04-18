@@ -1,7 +1,10 @@
 #include "chronos/api/handlers/vigil_integration_handlers.hpp"
 
 #include <atomic>
+#include <functional>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "chronos/time/clock.hpp"
@@ -165,6 +168,14 @@ std::string IncidentImpactFromExecutionState(const std::string& execution_state)
 http::HttpResponse HandleCreateVigilRemediationJob(
     const http::HttpRequest& request,
     const std::shared_ptr<HandlerContext>& context) {
+  struct IdempotencyEntry {
+    std::string payload_fingerprint;
+    std::string response_body;
+  };
+
+  static std::mutex idem_mu;
+  static std::unordered_map<std::string, IdempotencyEntry> idem_store;
+
   context->metrics->requests_total.fetch_add(1);
 
   if (const auto error = ValidateMandatoryHeaders(request); error.has_value()) {
@@ -175,8 +186,40 @@ http::HttpResponse HandleCreateVigilRemediationJob(
   }
 
   const auto tenant_id = GetHeader(request, "x-tenant-id");
+  const auto idempotency_key = GetHeader(request, "idempotency-key");
   const auto request_id = GetHeader(request, "x-request-id", request.request_id);
   const auto correlation_id = GetHeader(request, "x-correlation-id", request.request_id);
+
+  const auto scope_key = tenant_id + ":POST:/v1/integrations/vigil/remediation-jobs:" + idempotency_key;
+  const auto payload_fingerprint = std::to_string(std::hash<std::string>{}(request.body));
+
+  {
+    std::lock_guard<std::mutex> lock(idem_mu);
+    const auto it = idem_store.find(scope_key);
+    if (it != idem_store.end()) {
+      if (it->second.payload_fingerprint != payload_fingerprint) {
+        return BuildError(
+            409,
+            "CHRONOS_IDEMPOTENCY_MISMATCH",
+            "idempotency key reused with different payload",
+            request_id,
+            correlation_id,
+            false);
+      }
+
+      return {
+          .status = 202,
+          .body = it->second.response_body,
+          .headers = {
+              {"content-type", "application/json"},
+              {"idempotency-replayed", "true"},
+              {"x-tenant-id", tenant_id},
+              {"x-request-id", request_id},
+              {"x-correlation-id", correlation_id},
+          },
+      };
+    }
+  }
 
   const auto remediation_job_id = NextId("rj");
   const auto chronos_job_id = NextId("job");
@@ -192,14 +235,22 @@ http::HttpResponse HandleCreateVigilRemediationJob(
       "\"status\":\"accepted\","
       "\"state\":\"scheduled\","
       "\"createdAt\":\"" + now + "\","
-      "\"requestId\":\"" + request_id + "\"," 
-      "\"correlationId\":\"" + correlation_id + "\"," 
+      "\"requestId\":\"" + request_id + "\","
+      "\"correlationId\":\"" + correlation_id + "\","
       "\"links\":{"
       "\"job\":\"/v1/jobs/" + chronos_job_id + "\","
       "\"execution\":\"/v1/jobs/" + chronos_job_id + "/executions/" + execution_id + "\","
       "\"integration\":\"/v1/integrations/vigil/remediation-jobs/" + remediation_job_id + "\""
       "}"
       "}";
+
+  {
+    std::lock_guard<std::mutex> lock(idem_mu);
+    idem_store[scope_key] = IdempotencyEntry{
+        .payload_fingerprint = payload_fingerprint,
+        .response_body = response_body,
+    };
+  }
 
   return {
       .status = 202,
