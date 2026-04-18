@@ -1,8 +1,8 @@
 #include "chronos/api/handlers/vigil_integration_handlers.hpp"
 
 #include <atomic>
-#include <cstring>
 #include <string>
+#include <vector>
 
 #include "chronos/time/clock.hpp"
 
@@ -25,13 +25,139 @@ std::string GetHeader(
   return it->second;
 }
 
-http::HttpResponse MissingHeader(const std::string& header_name) {
+std::string EscapeJson(const std::string& value) {
+  std::string out;
+  out.reserve(value.size());
+  for (const auto c : value) {
+    if (c == '"') {
+      out += "\\\"";
+    } else if (c == '\\') {
+      out += "\\\\";
+    } else {
+      out.push_back(c);
+    }
+  }
+  return out;
+}
+
+http::HttpResponse BuildError(
+    int status,
+    const std::string& code,
+    const std::string& message,
+    const std::string& request_id,
+    const std::string& correlation_id,
+    bool retryable) {
+  const auto now = time::ToIso8601(time::UtcNow());
   return {
-      .status = 400,
-      .body = "{\"error\":{\"code\":\"VALIDATION_ERROR\",\"message\":\"missing required header: " +
-              header_name + "\"}}",
-      .headers = {{"content-type", "application/json"}},
+      .status = status,
+      .body =
+          "{"
+          "\"error\":{"
+          "\"code\":\"" + EscapeJson(code) + "\","
+          "\"message\":\"" + EscapeJson(message) + "\","
+          "\"httpStatus\":" + std::to_string(status) + ","
+          "\"retryable\":" + std::string(retryable ? "true" : "false") +
+          "},"
+          "\"requestId\":\"" + EscapeJson(request_id) + "\"," 
+          "\"correlationId\":\"" + EscapeJson(correlation_id) + "\"," 
+          "\"timestamp\":\"" + now + "\""
+          "}",
+      .headers = {
+          {"content-type", "application/json"},
+          {"x-request-id", request_id},
+          {"x-correlation-id", correlation_id},
+      },
   };
+}
+
+std::optional<http::HttpResponse> ValidateMandatoryHeaders(const http::HttpRequest& request) {
+  const auto request_id = GetHeader(request, "x-request-id", request.request_id);
+  const auto correlation_id = GetHeader(request, "x-correlation-id", request.request_id);
+
+  static const std::vector<std::string> kRequiredHeaders{
+      "x-tenant-id",
+      "idempotency-key",
+      "x-request-id",
+      "x-correlation-id",
+      "x-vigil-incident-id",
+      "x-vigil-action-id",
+  };
+
+  for (const auto& h : kRequiredHeaders) {
+    if (GetHeader(request, h).empty()) {
+      return BuildError(
+          400,
+          "CHRONOS_VALIDATION_ERROR",
+          "missing required header: " + h,
+          request_id,
+          correlation_id,
+          false);
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<http::HttpResponse> ValidateCreatePayloadShape(const http::HttpRequest& request) {
+  // Lightweight JSON schema enforcement (Phase 1.2) without external parser dependency.
+  // Deep semantic validation moves to typed DTO layer in later phases.
+  const auto& body = request.body;
+  const auto request_id = GetHeader(request, "x-request-id", request.request_id);
+  const auto correlation_id = GetHeader(request, "x-correlation-id", request.request_id);
+
+  if (body.empty()) {
+    return BuildError(
+        400,
+        "CHRONOS_VALIDATION_ERROR",
+        "request body must be valid JSON object",
+        request_id,
+        correlation_id,
+        false);
+  }
+
+  static const std::vector<std::string> kRequiredKeys{
+      "\"tenantId\"",
+      "\"incident\"",
+      "\"action\"",
+      "\"target\"",
+      "\"execution\"",
+      "\"schedule\"",
+      "\"audit\"",
+  };
+
+  for (const auto& key : kRequiredKeys) {
+    if (body.find(key) == std::string::npos) {
+      return BuildError(
+          400,
+          "CHRONOS_VALIDATION_ERROR",
+          "request schema violation: missing required field " + key,
+          request_id,
+          correlation_id,
+          false);
+    }
+  }
+
+  return std::nullopt;
+}
+
+std::string NormalizedActionStateFromExecutionState(const std::string& execution_state) {
+  if (execution_state == "PENDING") return "queued";
+  if (execution_state == "DISPATCHED") return "dispatched";
+  if (execution_state == "RUNNING") return "in_progress";
+  if (execution_state == "RETRY_PENDING") return "retrying";
+  if (execution_state == "SUCCEEDED") return "succeeded";
+  if (execution_state == "FAILED") return "failed";
+  if (execution_state == "DEAD_LETTER") return "dead_lettered";
+  return "unknown";
+}
+
+std::string IncidentImpactFromExecutionState(const std::string& execution_state) {
+  if (execution_state == "SUCCEEDED") {
+    return "resolved_candidate";
+  }
+  if (execution_state == "FAILED" || execution_state == "DEAD_LETTER") {
+    return "escalated";
+  }
+  return "open";
 }
 
 }  // namespace
@@ -41,28 +167,17 @@ http::HttpResponse HandleCreateVigilRemediationJob(
     const std::shared_ptr<HandlerContext>& context) {
   context->metrics->requests_total.fetch_add(1);
 
-  // Contract-mandatory headers for Phase 1.1
+  if (const auto error = ValidateMandatoryHeaders(request); error.has_value()) {
+    return *error;
+  }
+  if (const auto error = ValidateCreatePayloadShape(request); error.has_value()) {
+    return *error;
+  }
+
   const auto tenant_id = GetHeader(request, "x-tenant-id");
-  if (tenant_id.empty()) {
-    return MissingHeader("x-tenant-id");
-  }
+  const auto request_id = GetHeader(request, "x-request-id", request.request_id);
+  const auto correlation_id = GetHeader(request, "x-correlation-id", request.request_id);
 
-  const auto idempotency_key = GetHeader(request, "idempotency-key");
-  if (idempotency_key.empty()) {
-    return MissingHeader("idempotency-key");
-  }
-
-  const auto vigilance_incident_id = GetHeader(request, "x-vigil-incident-id");
-  if (vigilance_incident_id.empty()) {
-    return MissingHeader("x-vigil-incident-id");
-  }
-
-  const auto vigil_action_id = GetHeader(request, "x-vigil-action-id");
-  if (vigil_action_id.empty()) {
-    return MissingHeader("x-vigil-action-id");
-  }
-
-  // Phase 1.1 contract scaffold response (persistence/mapping hardening in later subphases).
   const auto remediation_job_id = NextId("rj");
   const auto chronos_job_id = NextId("job");
   const auto execution_id = NextId("exec");
@@ -70,16 +185,18 @@ http::HttpResponse HandleCreateVigilRemediationJob(
 
   const auto response_body =
       "{"
-      "\"remediationJobId\":\"" + remediation_job_id + "\"," 
-      "\"chronosJobId\":\"" + chronos_job_id + "\"," 
-      "\"executionId\":\"" + execution_id + "\"," 
-      "\"tenantId\":\"" + tenant_id + "\"," 
-      "\"status\":\"accepted\"," 
-      "\"state\":\"scheduled\"," 
-      "\"createdAt\":\"" + now + "\"," 
-      "\"links\":{" 
-      "\"job\":\"/v1/jobs/" + chronos_job_id + "\"," 
-      "\"execution\":\"/v1/jobs/" + chronos_job_id + "/executions/" + execution_id + "\"," 
+      "\"remediationJobId\":\"" + remediation_job_id + "\","
+      "\"chronosJobId\":\"" + chronos_job_id + "\","
+      "\"executionId\":\"" + execution_id + "\","
+      "\"tenantId\":\"" + tenant_id + "\","
+      "\"status\":\"accepted\","
+      "\"state\":\"scheduled\","
+      "\"createdAt\":\"" + now + "\","
+      "\"requestId\":\"" + request_id + "\"," 
+      "\"correlationId\":\"" + correlation_id + "\"," 
+      "\"links\":{"
+      "\"job\":\"/v1/jobs/" + chronos_job_id + "\","
+      "\"execution\":\"/v1/jobs/" + chronos_job_id + "/executions/" + execution_id + "\","
       "\"integration\":\"/v1/integrations/vigil/remediation-jobs/" + remediation_job_id + "\""
       "}"
       "}";
@@ -91,6 +208,8 @@ http::HttpResponse HandleCreateVigilRemediationJob(
           {"content-type", "application/json"},
           {"idempotency-replayed", "false"},
           {"x-tenant-id", tenant_id},
+          {"x-request-id", request_id},
+          {"x-correlation-id", correlation_id},
       },
   };
 }
@@ -100,22 +219,35 @@ http::HttpResponse HandleGetVigilRemediationJobById(
     const std::shared_ptr<HandlerContext>& context) {
   context->metrics->requests_total.fetch_add(1);
 
-  const auto tenant_id = GetHeader(request, "x-tenant-id", "default");
-  const auto it = request.path_params.find("id");
-  if (it == request.path_params.end() || it->second.empty()) {
-    return {
-        .status = 400,
-        .body = R"({"error":{"code":"VALIDATION_ERROR","message":"id path param missing"}})",
-        .headers = {{"content-type", "application/json"}},
-    };
+  if (const auto error = ValidateMandatoryHeaders(request); error.has_value()) {
+    return *error;
   }
 
+  const auto tenant_id = GetHeader(request, "x-tenant-id");
+  const auto request_id = GetHeader(request, "x-request-id", request.request_id);
+  const auto correlation_id = GetHeader(request, "x-correlation-id", request.request_id);
+
+  const auto it = request.path_params.find("id");
+  if (it == request.path_params.end() || it->second.empty()) {
+    return BuildError(
+        400,
+        "CHRONOS_VALIDATION_ERROR",
+        "id path param missing",
+        request_id,
+        correlation_id,
+        false);
+  }
+
+  const auto execution_state = std::string("DISPATCHED");
   const auto body =
       "{"
-      "\"remediationJobId\":\"" + it->second + "\"," 
-      "\"tenantId\":\"" + tenant_id + "\"," 
-      "\"status\":\"accepted\"," 
-      "\"state\":\"scheduled\"," 
+      "\"remediationJobId\":\"" + it->second + "\","
+      "\"tenantId\":\"" + tenant_id + "\","
+      "\"status\":\"accepted\","
+      "\"state\":\"scheduled\","
+      "\"executionState\":\"" + execution_state + "\"," 
+      "\"vigilActionState\":\"" + NormalizedActionStateFromExecutionState(execution_state) + "\"," 
+      "\"incidentImpact\":\"" + IncidentImpactFromExecutionState(execution_state) + "\"," 
       "\"chronosJobId\":\"job-lookup-pending\"," 
       "\"executionId\":\"exec-lookup-pending\""
       "}";
@@ -123,7 +255,11 @@ http::HttpResponse HandleGetVigilRemediationJobById(
   return {
       .status = 200,
       .body = body,
-      .headers = {{"content-type", "application/json"}},
+      .headers = {
+          {"content-type", "application/json"},
+          {"x-request-id", request_id},
+          {"x-correlation-id", correlation_id},
+      },
   };
 }
 
@@ -132,7 +268,13 @@ http::HttpResponse HandleCancelVigilRemediationJob(
     const std::shared_ptr<HandlerContext>& context) {
   context->metrics->requests_total.fetch_add(1);
 
-  const auto tenant_id = GetHeader(request, "x-tenant-id", "default");
+  if (const auto error = ValidateMandatoryHeaders(request); error.has_value()) {
+    return *error;
+  }
+
+  const auto tenant_id = GetHeader(request, "x-tenant-id");
+  const auto request_id = GetHeader(request, "x-request-id", request.request_id);
+  const auto correlation_id = GetHeader(request, "x-correlation-id", request.request_id);
 
   std::string remediation_job_id;
   if (const auto id_it = request.path_params.find("id");
@@ -144,38 +286,47 @@ http::HttpResponse HandleCancelVigilRemediationJob(
   }
 
   if (remediation_job_id.empty()) {
-    return {
-        .status = 400,
-        .body = R"({"error":{"code":"VALIDATION_ERROR","message":"id path param missing"}})",
-        .headers = {{"content-type", "application/json"}},
-    };
+    return BuildError(
+        400,
+        "CHRONOS_VALIDATION_ERROR",
+        "id path param missing",
+        request_id,
+        correlation_id,
+        false);
   }
 
   if (request.path.rfind(":cancel") == std::string::npos) {
-    return {
-        .status = 400,
-        .body = R"({"error":{"code":"VALIDATION_ERROR","message":"expected path suffix ':cancel'"}})",
-        .headers = {{"content-type", "application/json"}},
-    };
+    return BuildError(
+        400,
+        "CHRONOS_VALIDATION_ERROR",
+        "expected path suffix ':cancel'",
+        request_id,
+        correlation_id,
+        false);
   }
 
   constexpr const char* kCancelSuffix = ":cancel";
-  if (remediation_job_id.size() > std::char_traits<char>::length(kCancelSuffix) &&
-      remediation_job_id.rfind(kCancelSuffix) == remediation_job_id.size() - std::char_traits<char>::length(kCancelSuffix)) {
-    remediation_job_id = remediation_job_id.substr(0, remediation_job_id.size() - std::char_traits<char>::length(kCancelSuffix));
+  const auto suffix_len = std::char_traits<char>::length(kCancelSuffix);
+  if (remediation_job_id.size() > suffix_len &&
+      remediation_job_id.rfind(kCancelSuffix) == remediation_job_id.size() - suffix_len) {
+    remediation_job_id = remediation_job_id.substr(0, remediation_job_id.size() - suffix_len);
   }
 
   const auto body =
       "{"
-      "\"remediationJobId\":\"" + remediation_job_id + "\"," 
-      "\"tenantId\":\"" + tenant_id + "\"," 
+      "\"remediationJobId\":\"" + remediation_job_id + "\","
+      "\"tenantId\":\"" + tenant_id + "\","
       "\"status\":\"cancel_requested\""
       "}";
 
   return {
       .status = 202,
       .body = body,
-      .headers = {{"content-type", "application/json"}},
+      .headers = {
+          {"content-type", "application/json"},
+          {"x-request-id", request_id},
+          {"x-correlation-id", correlation_id},
+      },
   };
 }
 
@@ -184,21 +335,33 @@ http::HttpResponse HandleGetVigilActionStatus(
     const std::shared_ptr<HandlerContext>& context) {
   context->metrics->requests_total.fetch_add(1);
 
-  const auto tenant_id = GetHeader(request, "x-tenant-id", "default");
-  const auto it = request.path_params.find("vigilActionId");
-  if (it == request.path_params.end() || it->second.empty()) {
-    return {
-        .status = 400,
-        .body = R"({"error":{"code":"VALIDATION_ERROR","message":"vigilActionId path param missing"}})",
-        .headers = {{"content-type", "application/json"}},
-    };
+  if (const auto error = ValidateMandatoryHeaders(request); error.has_value()) {
+    return *error;
   }
 
+  const auto tenant_id = GetHeader(request, "x-tenant-id");
+  const auto request_id = GetHeader(request, "x-request-id", request.request_id);
+  const auto correlation_id = GetHeader(request, "x-correlation-id", request.request_id);
+
+  const auto it = request.path_params.find("vigilActionId");
+  if (it == request.path_params.end() || it->second.empty()) {
+    return BuildError(
+        400,
+        "CHRONOS_VALIDATION_ERROR",
+        "vigilActionId path param missing",
+        request_id,
+        correlation_id,
+        false);
+  }
+
+  const auto execution_state = std::string("RUNNING");
   const auto body =
       "{"
-      "\"vigilActionId\":\"" + it->second + "\"," 
-      "\"tenantId\":\"" + tenant_id + "\"," 
-      "\"status\":\"scheduled\"," 
+      "\"vigilActionId\":\"" + it->second + "\","
+      "\"tenantId\":\"" + tenant_id + "\","
+      "\"executionState\":\"" + execution_state + "\"," 
+      "\"status\":\"" + NormalizedActionStateFromExecutionState(execution_state) + "\"," 
+      "\"incidentImpact\":\"" + IncidentImpactFromExecutionState(execution_state) + "\"," 
       "\"chronosJobId\":\"job-lookup-pending\"," 
       "\"executionId\":\"exec-lookup-pending\""
       "}";
@@ -206,7 +369,11 @@ http::HttpResponse HandleGetVigilActionStatus(
   return {
       .status = 200,
       .body = body,
-      .headers = {{"content-type", "application/json"}},
+      .headers = {
+          {"content-type", "application/json"},
+          {"x-request-id", request_id},
+          {"x-correlation-id", correlation_id},
+      },
   };
 }
 

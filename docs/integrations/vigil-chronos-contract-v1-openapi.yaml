@@ -1,9 +1,10 @@
 openapi: 3.0.3
 info:
   title: vigil -> chronos integration contract
-  version: 1.0.0
+  version: 1.2.0
   description: |
     Contract v1 for vigil remediation dispatch into chronos.
+    Phase 1.2 includes mandatory headers and normalized error model.
 servers:
   - url: http://localhost:8080
 paths:
@@ -13,6 +14,7 @@ paths:
       operationId: createVigilRemediationJob
       tags: [vigil-integration]
       parameters:
+        - $ref: '#/components/parameters/Authorization'
         - $ref: '#/components/parameters/XTenantId'
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/XRequestId'
@@ -31,6 +33,10 @@ paths:
           headers:
             Idempotency-Replayed:
               schema: { type: string, enum: ["true", "false"] }
+            X-Request-Id:
+              schema: { type: string }
+            X-Correlation-Id:
+              schema: { type: string }
           content:
             application/json:
               schema:
@@ -59,13 +65,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate-limited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Dependency unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/integrations/vigil/remediation-jobs/{id}:
     get:
       summary: Get remediation job by id
       operationId: getVigilRemediationJobById
       tags: [vigil-integration]
       parameters:
+        - $ref: '#/components/parameters/Authorization'
         - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/XCorrelationId'
+        - $ref: '#/components/parameters/XVigilIncidentId'
+        - $ref: '#/components/parameters/XVigilActionId'
         - name: id
           in: path
           required: true
@@ -89,7 +113,13 @@ paths:
       operationId: cancelVigilRemediationJob
       tags: [vigil-integration]
       parameters:
+        - $ref: '#/components/parameters/Authorization'
         - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/XCorrelationId'
+        - $ref: '#/components/parameters/XVigilIncidentId'
+        - $ref: '#/components/parameters/XVigilActionId'
         - name: id
           in: path
           required: true
@@ -119,7 +149,13 @@ paths:
       operationId: getStatusByVigilActionId
       tags: [vigil-integration]
       parameters:
+        - $ref: '#/components/parameters/Authorization'
         - $ref: '#/components/parameters/XTenantId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/XCorrelationId'
+        - $ref: '#/components/parameters/XVigilIncidentId'
+        - $ref: '#/components/parameters/XVigilActionId'
         - name: vigilActionId
           in: path
           required: true
@@ -139,6 +175,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 components:
   parameters:
+    Authorization:
+      name: Authorization
+      in: header
+      required: true
+      schema: { type: string }
+      description: Bearer token, e.g. `Bearer dev-token`
     XTenantId:
       name: X-Tenant-Id
       in: header
@@ -172,6 +214,7 @@ components:
   schemas:
     CreateRemediationJobRequest:
       type: object
+      additionalProperties: false
       required:
         - tenantId
         - incident
@@ -247,7 +290,7 @@ components:
             changeTicket: { type: string }
     CreateRemediationJobResponse:
       type: object
-      required: [remediationJobId, chronosJobId, executionId, tenantId, status, state, createdAt]
+      required: [remediationJobId, chronosJobId, executionId, tenantId, status, state, createdAt, requestId, correlationId]
       properties:
         remediationJobId: { type: string }
         chronosJobId: { type: string }
@@ -256,6 +299,8 @@ components:
         status: { type: string, enum: [accepted] }
         state: { type: string }
         createdAt: { type: string, format: date-time }
+        requestId: { type: string }
+        correlationId: { type: string }
         links:
           type: object
           properties:
@@ -264,12 +309,15 @@ components:
             integration: { type: string }
     GetRemediationJobResponse:
       type: object
-      required: [remediationJobId, tenantId, status, state]
+      required: [remediationJobId, tenantId, status, state, executionState, vigilActionState, incidentImpact]
       properties:
         remediationJobId: { type: string }
         tenantId: { type: string }
         status: { type: string }
         state: { type: string }
+        executionState: { type: string }
+        vigilActionState: { type: string }
+        incidentImpact: { type: string }
         chronosJobId: { type: string }
         executionId: { type: string }
     CancelRemediationJobResponse:
@@ -281,20 +329,27 @@ components:
         status: { type: string, enum: [cancel_requested] }
     GetVigilActionStatusResponse:
       type: object
-      required: [vigilActionId, tenantId, status]
+      required: [vigilActionId, tenantId, status, executionState, incidentImpact]
       properties:
         vigilActionId: { type: string }
         tenantId: { type: string }
         status: { type: string }
+        executionState: { type: string }
+        incidentImpact: { type: string }
         chronosJobId: { type: string }
         executionId: { type: string }
     ErrorResponse:
       type: object
-      required: [error]
+      required: [error, requestId, correlationId, timestamp]
       properties:
         error:
           type: object
-          required: [code, message]
+          required: [code, message, httpStatus, retryable]
           properties:
             code: { type: string }
             message: { type: string }
+            httpStatus: { type: integer }
+            retryable: { type: boolean }
+        requestId: { type: string }
+        correlationId: { type: string }
+        timestamp: { type: string, format: date-time }
