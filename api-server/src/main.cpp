@@ -15,6 +15,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "chronos/api/application/integration_idempotency_repository.hpp"
 #include "chronos/api/handlers/context.hpp"
 #include "chronos/api/http/server.hpp"
 #include "chronos/coordination/redis_coordination.hpp"
@@ -150,6 +151,10 @@ int main() {
   context->in_memory_execution_repository = executions;
   context->coordination = std::make_shared<coordination::InMemoryRedisCoordination>();
   context->metrics = metrics;
+  context->integration_idempotency_repository =
+      std::make_shared<api::application::InMemoryIntegrationIdempotencyRepository>();
+  context->event_dedupe_repository =
+      std::make_shared<api::application::InMemoryEventDedupeRepository>();
 
   const char* token_env = std::getenv("CHRONOS_BEARER_TOKEN");
   const std::string token = token_env ? std::string(token_env) : std::string("dev-token");

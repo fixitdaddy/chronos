@@ -1,12 +1,9 @@
 #include "chronos/api/handlers/vigil_integration_handlers.hpp"
 
 #include <atomic>
-#include <functional>
-#include <mutex>
-#include <string>
-#include <unordered_map>
 #include <vector>
 
+#include "chronos/api/application/integration_idempotency_repository.hpp"
 #include "chronos/api/application/vigil_remediation_service.hpp"
 #include "chronos/api/dto/vigil_integration_dto.hpp"
 #include "chronos/time/clock.hpp"
@@ -159,14 +156,6 @@ std::string IncidentImpactFromExecutionState(const std::string& execution_state)
 http::HttpResponse HandleCreateVigilRemediationJob(
     const http::HttpRequest& request,
     const std::shared_ptr<HandlerContext>& context) {
-  struct IdempotencyEntry {
-    std::string payload_fingerprint;
-    std::string response_body;
-  };
-
-  static std::mutex idem_mu;
-  static std::unordered_map<std::string, IdempotencyEntry> idem_store;
-
   context->metrics->requests_total.fetch_add(1);
 
   if (const auto error = ValidateMandatoryHeaders(request); error.has_value()) {
@@ -180,36 +169,46 @@ http::HttpResponse HandleCreateVigilRemediationJob(
   const auto idempotency_key = GetHeader(request, "idempotency-key");
   const auto request_id = GetHeader(request, "x-request-id", request.request_id);
   const auto correlation_id = GetHeader(request, "x-correlation-id", request.request_id);
+  const auto endpoint = std::string("POST:/v1/integrations/vigil/remediation-jobs");
 
-  const auto scope_key = tenant_id + ":POST:/v1/integrations/vigil/remediation-jobs:" + idempotency_key;
-  const auto payload_fingerprint = std::to_string(std::hash<std::string>{}(request.body));
+  if (!context->integration_idempotency_repository) {
+    return BuildError(
+        500,
+        "CHRONOS_INTERNAL_ERROR",
+        "integration idempotency repository is not configured",
+        request_id,
+        correlation_id,
+        true);
+  }
 
-  {
-    std::lock_guard<std::mutex> lock(idem_mu);
-    const auto it = idem_store.find(scope_key);
-    if (it != idem_store.end()) {
-      if (it->second.payload_fingerprint != payload_fingerprint) {
-        return BuildError(
-            409,
-            "CHRONOS_IDEMPOTENCY_MISMATCH",
-            "idempotency key reused with different payload",
-            request_id,
-            correlation_id,
-            false);
-      }
+  const auto payload_hash = application::ComputeCanonicalPayloadHash(request.body);
+  const auto existing = context->integration_idempotency_repository->Get(
+      tenant_id,
+      endpoint,
+      idempotency_key);
 
-      return {
-          .status = 202,
-          .body = it->second.response_body,
-          .headers = {
-              {"content-type", "application/json"},
-              {"idempotency-replayed", "true"},
-              {"x-tenant-id", tenant_id},
-              {"x-request-id", request_id},
-              {"x-correlation-id", correlation_id},
-          },
-      };
+  if (existing.has_value()) {
+    if (existing->canonical_payload_hash != payload_hash) {
+      return BuildError(
+          409,
+          "CHRONOS_IDEMPOTENCY_MISMATCH",
+          "idempotency key reused with different payload",
+          request_id,
+          correlation_id,
+          false);
     }
+
+    return {
+        .status = 202,
+        .body = existing->response_body,
+        .headers = {
+            {"content-type", "application/json"},
+            {"idempotency-replayed", "true"},
+            {"x-tenant-id", tenant_id},
+            {"x-request-id", request_id},
+            {"x-correlation-id", correlation_id},
+        },
+    };
   }
 
   const auto parsed = dto::ParseCreateRemediationJobDto(request.body);
@@ -262,12 +261,22 @@ http::HttpResponse HandleCreateVigilRemediationJob(
       "}"
       "}";
 
-  {
-    std::lock_guard<std::mutex> lock(idem_mu);
-    idem_store[scope_key] = IdempotencyEntry{
-        .payload_fingerprint = payload_fingerprint,
-        .response_body = response_body,
-    };
+  const application::IdempotencyRecord record{
+      .tenant_id = tenant_id,
+      .endpoint = endpoint,
+      .idempotency_key = idempotency_key,
+      .canonical_payload_hash = payload_hash,
+      .response_body = response_body,
+  };
+
+  if (!context->integration_idempotency_repository->Put(record)) {
+    return BuildError(
+        500,
+        "CHRONOS_INTERNAL_ERROR",
+        "failed to persist idempotency record",
+        request_id,
+        correlation_id,
+        true);
   }
 
   return {

@@ -10,6 +10,11 @@
 #include "chronos/persistence/in_memory/in_memory_repositories.hpp"
 #include "chronos/persistence/repository.hpp"
 
+namespace chronos::api::application {
+class IIntegrationIdempotencyRepository;
+class IEventDedupeRepository;
+}
+
 namespace chronos::api::handlers {
 
 struct Metrics {
@@ -42,6 +47,8 @@ struct HandlerContext {
   std::shared_ptr<persistence::in_memory::InMemoryExecutionRepository> in_memory_execution_repository;
   std::shared_ptr<coordination::IRedisCoordination> coordination;
   std::shared_ptr<Metrics> metrics;
+  std::shared_ptr<application::IIntegrationIdempotencyRepository> integration_idempotency_repository;
+  std::shared_ptr<application::IEventDedupeRepository> event_dedupe_repository;
   std::string service_name{"api-server"};
 };
 

@@ -5,6 +5,7 @@
 #include <string>
 #include <utility>
 
+#include "chronos/api/application/integration_retention_service.hpp"
 #include "chronos/api/handlers/dead_letter_handlers.hpp"
 #include "chronos/api/handlers/health_handlers.hpp"
 #include "chronos/api/handlers/job_handlers.hpp"
@@ -218,6 +219,27 @@ HttpResponse ApiServer::Handle(HttpRequest request) const {
           correlation_id,
           true);
     }
+  }
+
+  // maintenance endpoint for TTL retention runs
+  if (request.method == "POST" && request.path == "/v1/integrations/vigil/maintenance/retention:run") {
+    application::IntegrationRetentionService retention(
+        context_->integration_idempotency_repository,
+        context_->event_dedupe_repository);
+
+    // Defaults: idempotency 7 days, dedupe 2 days
+    const auto run = retention.Run(std::chrono::hours(24 * 7), std::chrono::hours(24 * 2));
+
+    return {
+        .status = 200,
+        .body = "{\"ok\":true,\"idempotencyRemoved\":" + std::to_string(run.idempotency_removed) +
+                ",\"dedupeRemoved\":" + std::to_string(run.dedupe_removed) + "}",
+        .headers = {
+            {"content-type", "application/json"},
+            {"x-request-id", request.request_id},
+            {"x-correlation-id", correlation_id},
+        },
+    };
   }
 
   auto response = router_.Handle(request);

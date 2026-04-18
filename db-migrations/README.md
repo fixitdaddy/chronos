@@ -10,6 +10,8 @@ runtime application logic.
 - `postgres/0001_init.sql`: baseline schema (jobs, schedules, executions, attempts, heartbeats, audit, outbox)
 - `postgres/0002_functions_and_triggers.sql`: updated_at trigger utilities
 - `postgres/0003_seed_dev.sql`: deterministic dev seed data
+- `postgres/0004_integration_idempotency_keys.sql`: integration idempotency scope table (`tenant_id`, `endpoint`, `idempotency_key`) + canonical payload hash storage
+- `postgres/0005_integration_event_dedupe.sql`: event dedupe scope table (`tenant_id`, `event_id`) for consumer idempotence
 - `scripts/migrate.sh`: applies all SQL migrations in lexical order
 - `scripts/reset_dev.sh`: resets the `public` schema (dev only)
 - `scripts/seed_dev.sh`: applies dev seed file
