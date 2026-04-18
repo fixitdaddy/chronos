@@ -4,6 +4,8 @@ set(CHRONOS_API_SERVER_SOURCES
   src/middleware/auth_middleware.cpp
   src/middleware/request_id_middleware.cpp
   src/validation/job_validation.cpp
+  src/dto/vigil_integration_dto.cpp
+  src/application/vigil_remediation_service.cpp
   src/handlers/job_handlers.cpp
   src/handlers/schedule_handlers.cpp
   src/handlers/health_handlers.cpp

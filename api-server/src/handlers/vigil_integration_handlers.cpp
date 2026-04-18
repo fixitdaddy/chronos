@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "chronos/api/application/vigil_remediation_service.hpp"
+#include "chronos/api/dto/vigil_integration_dto.hpp"
 #include "chronos/time/clock.hpp"
 
 namespace chronos::api::handlers {
@@ -101,42 +103,30 @@ std::optional<http::HttpResponse> ValidateMandatoryHeaders(const http::HttpReque
 }
 
 std::optional<http::HttpResponse> ValidateCreatePayloadShape(const http::HttpRequest& request) {
-  // Lightweight JSON schema enforcement (Phase 1.2) without external parser dependency.
-  // Deep semantic validation moves to typed DTO layer in later phases.
-  const auto& body = request.body;
   const auto request_id = GetHeader(request, "x-request-id", request.request_id);
   const auto correlation_id = GetHeader(request, "x-correlation-id", request.request_id);
 
-  if (body.empty()) {
+  const auto parsed = dto::ParseCreateRemediationJobDto(request.body);
+  if (!parsed.ok) {
     return BuildError(
         400,
         "CHRONOS_VALIDATION_ERROR",
-        "request body must be valid JSON object",
+        parsed.message,
         request_id,
         correlation_id,
         false);
   }
 
-  static const std::vector<std::string> kRequiredKeys{
-      "\"tenantId\"",
-      "\"incident\"",
-      "\"action\"",
-      "\"target\"",
-      "\"execution\"",
-      "\"schedule\"",
-      "\"audit\"",
-  };
-
-  for (const auto& key : kRequiredKeys) {
-    if (body.find(key) == std::string::npos) {
-      return BuildError(
-          400,
-          "CHRONOS_VALIDATION_ERROR",
-          "request schema violation: missing required field " + key,
-          request_id,
-          correlation_id,
-          false);
-    }
+  // Header/body tenant alignment.
+  const auto tenant_header = GetHeader(request, "x-tenant-id");
+  if (!tenant_header.empty() && parsed.dto.tenant_id != tenant_header) {
+    return BuildError(
+        403,
+        "CHRONOS_FORBIDDEN_TENANT",
+        "tenant mismatch between header and payload",
+        request_id,
+        correlation_id,
+        false);
   }
 
   return std::nullopt;
@@ -150,6 +140,7 @@ std::string NormalizedActionStateFromExecutionState(const std::string& execution
   if (execution_state == "SUCCEEDED") return "succeeded";
   if (execution_state == "FAILED") return "failed";
   if (execution_state == "DEAD_LETTER") return "dead_lettered";
+  if (execution_state == "CANCEL_REQUESTED") return "cancel_requested";
   return "unknown";
 }
 
@@ -221,26 +212,53 @@ http::HttpResponse HandleCreateVigilRemediationJob(
     }
   }
 
-  const auto remediation_job_id = NextId("rj");
-  const auto chronos_job_id = NextId("job");
-  const auto execution_id = NextId("exec");
+  const auto parsed = dto::ParseCreateRemediationJobDto(request.body);
+  if (!parsed.ok) {
+    return BuildError(
+        400,
+        "CHRONOS_VALIDATION_ERROR",
+        parsed.message,
+        request_id,
+        correlation_id,
+        false);
+  }
+
+  application::VigilRemediationService service(context);
+  const auto created = service.CreateRemediationJob(
+      parsed.dto,
+      tenant_id,
+      GetHeader(request, "x-vigil-incident-id"),
+      GetHeader(request, "x-vigil-action-id"),
+      request_id,
+      correlation_id,
+      idempotency_key);
+  if (!created.ok) {
+    return BuildError(
+        500,
+        "CHRONOS_INTERNAL_ERROR",
+        created.message,
+        request_id,
+        correlation_id,
+        true);
+  }
+
   const auto now = time::ToIso8601(time::UtcNow());
 
   const auto response_body =
       "{"
-      "\"remediationJobId\":\"" + remediation_job_id + "\","
-      "\"chronosJobId\":\"" + chronos_job_id + "\","
-      "\"executionId\":\"" + execution_id + "\","
+      "\"remediationJobId\":\"" + created.remediation_job_id + "\","
+      "\"chronosJobId\":\"" + created.chronos_job_id + "\","
+      "\"executionId\":\"" + created.execution_id + "\","
       "\"tenantId\":\"" + tenant_id + "\","
       "\"status\":\"accepted\","
-      "\"state\":\"scheduled\","
+      "\"state\":\"" + created.state + "\","
       "\"createdAt\":\"" + now + "\","
       "\"requestId\":\"" + request_id + "\","
       "\"correlationId\":\"" + correlation_id + "\","
       "\"links\":{"
-      "\"job\":\"/v1/jobs/" + chronos_job_id + "\","
-      "\"execution\":\"/v1/jobs/" + chronos_job_id + "/executions/" + execution_id + "\","
-      "\"integration\":\"/v1/integrations/vigil/remediation-jobs/" + remediation_job_id + "\""
+      "\"job\":\"/v1/jobs/" + created.chronos_job_id + "\","
+      "\"execution\":\"/v1/jobs/" + created.chronos_job_id + "/executions/" + created.execution_id + "\","
+      "\"integration\":\"/v1/integrations/vigil/remediation-jobs/" + created.remediation_job_id + "\""
       "}"
       "}";
 
@@ -289,18 +307,33 @@ http::HttpResponse HandleGetVigilRemediationJobById(
         false);
   }
 
-  const auto execution_state = std::string("DISPATCHED");
+  application::VigilRemediationService service(context);
+  const auto lookup = service.GetRemediationJobById(it->second, tenant_id);
+  if (!lookup.ok) {
+    return BuildError(
+        404,
+        "CHRONOS_NOT_FOUND",
+        lookup.message,
+        request_id,
+        correlation_id,
+        false);
+  }
+
   const auto body =
       "{"
-      "\"remediationJobId\":\"" + it->second + "\","
-      "\"tenantId\":\"" + tenant_id + "\","
+      "\"remediationJobId\":\"" + lookup.record.remediation_job_id + "\","
+      "\"tenantId\":\"" + lookup.record.tenant_id + "\","
       "\"status\":\"accepted\","
       "\"state\":\"scheduled\","
-      "\"executionState\":\"" + execution_state + "\"," 
-      "\"vigilActionState\":\"" + NormalizedActionStateFromExecutionState(execution_state) + "\"," 
-      "\"incidentImpact\":\"" + IncidentImpactFromExecutionState(execution_state) + "\"," 
-      "\"chronosJobId\":\"job-lookup-pending\"," 
-      "\"executionId\":\"exec-lookup-pending\""
+      "\"executionState\":\"" + lookup.record.execution_state + "\","
+      "\"vigilActionState\":\"" + NormalizedActionStateFromExecutionState(lookup.record.execution_state) + "\","
+      "\"incidentImpact\":\"" + IncidentImpactFromExecutionState(lookup.record.execution_state) + "\","
+      "\"vigilIncidentId\":\"" + lookup.record.vigil_incident_id + "\","
+      "\"vigilActionId\":\"" + lookup.record.vigil_action_id + "\","
+      "\"requestId\":\"" + lookup.record.request_id + "\","
+      "\"correlationId\":\"" + lookup.record.correlation_id + "\","
+      "\"chronosJobId\":\"" + lookup.record.chronos_job_id + "\","
+      "\"executionId\":\"" + lookup.record.execution_id + "\""
       "}";
 
   return {
@@ -327,13 +360,39 @@ http::HttpResponse HandleCancelVigilRemediationJob(
   const auto request_id = GetHeader(request, "x-request-id", request.request_id);
   const auto correlation_id = GetHeader(request, "x-correlation-id", request.request_id);
 
+  constexpr const char* kPrefix = "/v1/integrations/vigil/remediation-jobs/";
+  constexpr const char* kCancelSuffix = ":cancel";
+
   std::string remediation_job_id;
-  if (const auto id_it = request.path_params.find("id");
-      id_it != request.path_params.end() && !id_it->second.empty()) {
-    remediation_job_id = id_it->second;
-  } else if (const auto id_cancel_it = request.path_params.find("id:cancel");
-             id_cancel_it != request.path_params.end() && !id_cancel_it->second.empty()) {
+
+  if (const auto id_cancel_it = request.path_params.find("id:cancel");
+      id_cancel_it != request.path_params.end() && !id_cancel_it->second.empty()) {
     remediation_job_id = id_cancel_it->second;
+  } else if (const auto id_it = request.path_params.find("id");
+             id_it != request.path_params.end() && !id_it->second.empty()) {
+    remediation_job_id = id_it->second;
+  }
+
+  if (remediation_job_id.empty()) {
+    const auto prefix_pos = request.path.find(kPrefix);
+    const auto suffix_pos = request.path.rfind(kCancelSuffix);
+    if (prefix_pos != std::string::npos && suffix_pos != std::string::npos && suffix_pos > prefix_pos) {
+      const auto start = prefix_pos + std::char_traits<char>::length(kPrefix);
+      remediation_job_id = request.path.substr(start, suffix_pos - start);
+    }
+  }
+
+  const auto suffix_len = std::char_traits<char>::length(kCancelSuffix);
+  if (remediation_job_id.size() > suffix_len &&
+      remediation_job_id.rfind(kCancelSuffix) == remediation_job_id.size() - suffix_len) {
+    remediation_job_id = remediation_job_id.substr(0, remediation_job_id.size() - suffix_len);
+  }
+
+  if (!remediation_job_id.empty()) {
+    const auto extra_colon = remediation_job_id.find(':');
+    if (extra_colon != std::string::npos) {
+      remediation_job_id = remediation_job_id.substr(0, extra_colon);
+    }
   }
 
   if (remediation_job_id.empty()) {
@@ -346,28 +405,44 @@ http::HttpResponse HandleCancelVigilRemediationJob(
         false);
   }
 
-  if (request.path.rfind(":cancel") == std::string::npos) {
+  application::VigilRemediationService service(context);
+  auto cancelled = service.CancelRemediationJob(
+      remediation_job_id,
+      tenant_id,
+      request_id,
+      correlation_id);
+
+  // Fallback path: if remediation id lookup fails, resolve by vigil action id index.
+  if (!cancelled.ok && cancelled.message == "remediation job not found") {
+    const auto action_id = GetHeader(request, "x-vigil-action-id");
+    if (!action_id.empty()) {
+      const auto by_action = service.GetByVigilActionId(action_id, tenant_id);
+      if (by_action.ok) {
+        cancelled = service.CancelRemediationJob(
+            by_action.record.remediation_job_id,
+            tenant_id,
+            request_id,
+            correlation_id);
+      }
+    }
+  }
+
+  if (!cancelled.ok) {
     return BuildError(
-        400,
-        "CHRONOS_VALIDATION_ERROR",
-        "expected path suffix ':cancel'",
+        409,
+        "CHRONOS_STATE_CONFLICT",
+        cancelled.message,
         request_id,
         correlation_id,
         false);
   }
 
-  constexpr const char* kCancelSuffix = ":cancel";
-  const auto suffix_len = std::char_traits<char>::length(kCancelSuffix);
-  if (remediation_job_id.size() > suffix_len &&
-      remediation_job_id.rfind(kCancelSuffix) == remediation_job_id.size() - suffix_len) {
-    remediation_job_id = remediation_job_id.substr(0, remediation_job_id.size() - suffix_len);
-  }
-
   const auto body =
       "{"
-      "\"remediationJobId\":\"" + remediation_job_id + "\","
-      "\"tenantId\":\"" + tenant_id + "\","
-      "\"status\":\"cancel_requested\""
+      "\"remediationJobId\":\"" + cancelled.remediation_job_id + "\","
+      "\"tenantId\":\"" + cancelled.tenant_id + "\","
+      "\"status\":\"" + std::string(cancelled.cancelled ? "cancelled" : "cancel_requested") + "\","
+      "\"executionState\":\"" + cancelled.resulting_execution_state + "\""
       "}";
 
   return {
@@ -405,16 +480,28 @@ http::HttpResponse HandleGetVigilActionStatus(
         false);
   }
 
-  const auto execution_state = std::string("RUNNING");
+  application::VigilRemediationService service(context);
+  const auto lookup = service.GetByVigilActionId(it->second, tenant_id);
+  if (!lookup.ok) {
+    return BuildError(
+        404,
+        "CHRONOS_NOT_FOUND",
+        lookup.message,
+        request_id,
+        correlation_id,
+        false);
+  }
+
   const auto body =
       "{"
-      "\"vigilActionId\":\"" + it->second + "\","
-      "\"tenantId\":\"" + tenant_id + "\","
-      "\"executionState\":\"" + execution_state + "\"," 
-      "\"status\":\"" + NormalizedActionStateFromExecutionState(execution_state) + "\"," 
-      "\"incidentImpact\":\"" + IncidentImpactFromExecutionState(execution_state) + "\"," 
-      "\"chronosJobId\":\"job-lookup-pending\"," 
-      "\"executionId\":\"exec-lookup-pending\""
+      "\"vigilActionId\":\"" + lookup.record.vigil_action_id + "\","
+      "\"tenantId\":\"" + lookup.record.tenant_id + "\","
+      "\"executionState\":\"" + lookup.record.execution_state + "\","
+      "\"status\":\"" + NormalizedActionStateFromExecutionState(lookup.record.execution_state) + "\","
+      "\"incidentImpact\":\"" + IncidentImpactFromExecutionState(lookup.record.execution_state) + "\","
+      "\"remediationJobId\":\"" + lookup.record.remediation_job_id + "\","
+      "\"chronosJobId\":\"" + lookup.record.chronos_job_id + "\","
+      "\"executionId\":\"" + lookup.record.execution_id + "\""
       "}";
 
   return {
